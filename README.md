@@ -1,11 +1,12 @@
 # 🚀 AI LinkedIn Post Generator & Fact-Checker
 
-[![CI/CD Pipeline](https://github.com/yourusername/linkedin-post-generator/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/linkedin-post-generator/actions/workflows/ci.yml)
-[![Codecov](https://codecov.io/gh/yourusername/linkedin-post-generator/branch/main/graph/badge.svg)](https://codecov.io/gh/yourusername/linkedin-post-generator)
-[![Docker Pulls](https://img.shields.io/docker/pulls/yourusername/linkedin-post-generator)](https://hub.docker.com/r/yourusername/linkedin-post-generator)
+[![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.28.0-ff4b4b.svg)](https://streamlit.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An intelligent, production-ready application that generates engaging LinkedIn posts and automatically fact-checks them for accuracy. Built with modern AI technologies and software engineering best practices.
+An intelligent application that generates engaging LinkedIn posts and automatically fact-checks them for accuracy. Built with modern AI technologies.
+
+---
 
 ## ✨ Features
 
@@ -48,6 +49,8 @@ An intelligent, production-ready application that generates engaging LinkedIn po
 - CI/CD pipeline
 - Extensive test coverage
 
+---
+
 ## 🛠️ Tech Stack
 
 | Component | Technology |
@@ -65,6 +68,8 @@ An intelligent, production-ready application that generates engaging LinkedIn po
 | CI/CD | GitHub Actions |
 | Logging | Loguru |
 
+---
+
 ## 📋 Prerequisites
 
 - Python 3.10+
@@ -74,6 +79,8 @@ An intelligent, production-ready application that generates engaging LinkedIn po
   - [SerpAPI](https://serpapi.com/) for fact-checking
   - [Google Gemini](https://ai.google.dev/) (optional)
   - [OpenAI](https://openai.com/) (optional)
+
+---
 
 ## 🚀 Quick Start
 
