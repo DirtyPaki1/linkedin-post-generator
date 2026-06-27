@@ -1,91 +1,34 @@
-import os
 import re
 import json
-from typing import List, Dict, Any, Optional, Tuple
-from langchain.prompts import ChatPromptTemplate
-from langchain_groq import ChatGroq
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import ChatOpenAI
-from serpapi import GoogleSearch
-import time
+from typing import List, Dict, Any
+from groq import Groq
+from serpapi import Client
 from config import get_settings
-from utils.cache import cached, redis_cache
-from utils.logger import get_logger, log_performance
 
 settings = get_settings()
-logger = get_logger(__name__)
 
 class FactChecker:
-    """Enhanced agent for fact-checking with confidence scoring."""
-    
-    def __init__(self, model_type: str = None):
-        """Initialize the fact-checker."""
-        self.model_type = model_type or settings.default_model
-        self.llm = self._initialize_llm()
+    def __init__(self):
+        self.client = Groq(api_key=settings.groq_api_key)
         self.serpapi_key = settings.serpapi_api_key
-        self.confidence_threshold = 0.7
-        logger.info(f"Initialized FactChecker with {self.model_type}")
-    
-    def _initialize_llm(self):
-        """Initialize the LLM."""
-        try:
-            if self.model_type == "groq":
-                return ChatGroq(
-                    model="llama3-70b-8192",
-                    temperature=0.1,
-                    max_tokens=1000,
-                    api_key=settings.groq_api_key
-                )
-            elif self.model_type == "google":
-                return ChatGoogleGenerativeAI(
-                    model="gemini-pro",
-                    temperature=0.1,
-                    max_tokens=1000,
-                    google_api_key=settings.google_api_key
-                )
-            elif self.model_type == "openai":
-                return ChatOpenAI(
-                    model="gpt-4-turbo-preview",
-                    temperature=0.1,
-                    max_tokens=1000,
-                    api_key=settings.openai_api_key
-                )
-            else:
-                raise ValueError(f"Unsupported model type: {self.model_type}")
-        except Exception as e:
-            logger.error(f"Failed to initialize LLM: {e}")
-            raise
+        self.serp_client = Client(api_key=self.serpapi_key)
+        self.model = "llama-3.3-70b-versatile"
     
     def extract_claims(self, text: str) -> List[str]:
-        """Extract factual claims with improved pattern matching."""
+        """Extract factual claims using improved patterns."""
         claims = []
         
-        # Enhanced patterns for factual claims
+        # Enhanced patterns for finding facts
         patterns = [
-            # Statistics and percentages
-            r'(\d+%?)\s+(?:of|increase|decrease|growth|decline|rise|fall|improve|reduce)\s+',
-            r'(?:over|more than|less than|about|approximately)\s+\d+\s+(?:percent|%|million|billion|years?|people|users|companies)',
-            
-            # Time-based claims
-            r'(?:in|from|between)\s+\d{4}\s+(?:to|and)\s+\d{4}',
-            r'(?:since|as of|by)\s+\d{4}',
-            r'(?:last|past|next)\s+\d+\s+(?:years?|months?|weeks?|days?)',
-            
-            # Comparative claims
-            r'(?:the\s+)?(?:average|median|mean|typical|standard)\s+\w+\s+(?:is|are|was|were)\s+\d+',
-            r'(?:better|worse|higher|lower|more|less)\s+than\s+\d+',
-            
-            # Rankings and positions
-            r'(?:ranked?|positioned?|listed?)\s+#?\d+',
-            r'(?:top|leading|biggest|largest|smallest)\s+\d+',
-            
-            # Dollar amounts
+            r'(\d+%?)',
             r'\$\d+(?:\.\d+)?\s*(?:million|billion|trillion)?',
-            r'(?:revenue|profit|sales|spending|budget|cost)\s+(?:of|at|around)\s+\$?\d+',
-            
-            # Quantifiable claims
-            r'(?:increase|decrease|growth|decline|rise|fall)\s+(?:by\s+)?\d+%?',
-            r'(?:more|less)\s+than\s+\d+\s+(?:percent|%|times?|x)',
+            r'\b(?:19|20)\d{2}\b',
+            r'(?:increase|decrease|rise|fall|improve|reduce)\s+(?:by\s+)?\d+%?',
+            r'(?:over|more than|less than|about|approximately)\s+\d+\s+(?:percent|%|million|billion|people|users|companies)',
+            r'(?:\d+)\s+(?:out of|of)\s+\d+',
+            r'(?:projected|estimated|predicted|expected)\s+(?:to\s+)?(?:reach|grow|increase)\s+\$?\d+',
+            r'(?:ranked?|positioned?|listed?)\s+#?\d+',
+            r'(?:since|as of|by)\s+\d{4}',
         ]
         
         for pattern in patterns:
@@ -93,217 +36,139 @@ class FactChecker:
             for match in matches:
                 if isinstance(match, tuple):
                     match = ' '.join(match)
-                if len(str(match)) > 3:
+                if len(str(match)) > 2:
                     claims.append(str(match).strip())
         
-        # Use LLM for additional claims
+        # Extract full sentences with claims
+        sentences = re.split(r'[.!?]+', text)
+        for sentence in sentences:
+            if re.search(r'\d+%?|\$|\d{4}|stud(y|ies)|research|report|according|study|data', sentence, re.IGNORECASE):
+                if len(sentence.strip()) > 20:
+                    claims.append(sentence.strip())
+        
+        # Use LLM for additional claim extraction
         if len(claims) < 3:
-            prompt = ChatPromptTemplate.from_template("""
-            Extract factual claims from the following text. Focus on verifiable statements 
-            that contain specific numbers, dates, statistics, or quantifiable information.
-            Return only the claims, one per line.
+            prompt = f"""Extract specific factual claims from this text. 
+            Look for statistics, percentages, numbers, dates, or verifiable statements.
+            Return ONLY the claims, one per line, without numbers or bullets.
             
             Text: {text}
             
-            Claims:
-            """)
+            Claims:"""
             
-            messages = prompt.format_messages(text=text)
-            response = self.llm.invoke(messages)
-            llm_claims = response.content.strip().split('\n')
-            claims.extend([c.strip() for c in llm_claims if c.strip() and len(c.strip()) > 5])
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=300
+                )
+                llm_claims = response.choices[0].message.content.strip().split('\n')
+                claims.extend([c.strip() for c in llm_claims if c.strip() and len(c.strip()) > 10])
+            except:
+                pass
         
-        # Remove duplicates and clean
         claims = list(set(claims))
-        claims = [c for c in claims if len(c) > 3]
+        claims = [c for c in claims if len(c) > 3 and not c.isdigit()]
         
-        logger.info(f"Extracted {len(claims)} claims from text")
-        return claims
+        return claims[:5]
     
-    def _search_web(self, query: str, max_results: int = 3) -> List[str]:
-        """Search the web with retry logic."""
+    def _search_web(self, query: str) -> List[str]:
+        """Search the web using SerpAPI Client."""
         try:
-            params = {
-                "q": query,
-                "api_key": self.serpapi_key,
-                "num": max_results
-            }
-            
-            search = GoogleSearch(params)
-            results = search.get_dict()
+            result = self.serp_client.search(
+                q=query,
+                num=3
+            )
             
             snippets = []
-            if "organic_results" in results:
-                for result in results["organic_results"][:max_results]:
-                    if "snippet" in result:
-                        snippets.append(result["snippet"])
-                    if "title" in result:
-                        snippets.append(result["title"])
+            if "organic_results" in result:
+                for item in result["organic_results"][:3]:
+                    if "snippet" in item:
+                        snippets.append(item["snippet"])
+                    if "title" in item:
+                        snippets.append(item["title"])
             
-            logger.debug(f"Search for '{query}' returned {len(snippets)} results")
             return snippets
             
         except Exception as e:
-            logger.error(f"Search error for '{query}': {e}")
+            print(f"Search error: {e}")
             return []
     
-    @cached(ttl=3600)
     def verify_claim(self, claim: str) -> Dict[str, Any]:
-        """Verify a single claim with confidence scoring."""
-        start_time = time.time()
-        
-        # Check cache
-        cache_key = f"fact_check:{claim}"
-        cached_result = redis_cache.get(cache_key)
-        if cached_result:
-            log_performance("verify_claim_cache_hit", time.time() - start_time, {'claim': claim[:50]})
-            return cached_result
-        
-        # Search for evidence
-        search_results = self._search_web(claim)
-        
-        if not search_results:
-            return {
-                "status": "unverified",
-                "confidence": 0.0,
-                "explanation": "No search results found to verify this claim.",
-                "source": None,
-                "evidence": []
-            }
-        
-        # Use LLM to evaluate
-        prompt = ChatPromptTemplate.from_template("""
-        You are a fact-checker. Verify this claim based on the search results.
-        
-        Claim: {claim}
-        
-        Search Results:
-        {search_results}
-        
-        Analyze the claim and provide:
-        1. Status: "verified", "unverified", or "inaccurate"
-        2. Confidence score (0.0-1.0)
-        3. Brief explanation
-        4. Source quote from search results
-        
-        Format your response as JSON:
-        {{
-            "status": "verified|unverified|inaccurate",
-            "confidence": 0.0-1.0,
-            "explanation": "brief explanation",
-            "source": "exact quote from source",
-            "evidence": ["piece of evidence 1", "piece of evidence 2"]
-        }}
-        """)
-        
-        messages = prompt.format_messages(
-            claim=claim,
-            search_results="\n".join(search_results[:5])
-        )
-        
+        """Verify a claim with more nuanced statuses."""
         try:
-            response = self.llm.invoke(messages)
-            result = json.loads(response.content)
+            snippets = self._search_web(claim)
             
-            # Validate confidence
-            if result.get('confidence', 0) < self.confidence_threshold:
+            prompt = f"""Carefully verify this claim based on search results:
+
+Claim: {claim}
+
+Search Results:
+{chr(10).join(snippets) if snippets else 'No results found.'}
+
+Respond with ONLY valid JSON using these statuses:
+- "verified": Claim is supported by multiple credible sources
+- "partially_verified": Claim is partially true but may be outdated or exaggerated
+- "unverified": No clear evidence found (claim may be true or false)
+- "inaccurate": Claim is contradicted by multiple credible sources
+
+Format:
+{{"status": "verified|partially_verified|unverified|inaccurate", "confidence": 0.0-1.0, "explanation": "brief explanation of what sources say"}}
+"""
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=250
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # Default to unverified if confidence is too low
+            if result.get('confidence', 0) < 0.3:
                 result['status'] = 'unverified'
-            
-            # Cache the result
-            redis_cache.set(cache_key, result)
-            
-            duration = time.time() - start_time
-            log_performance("verify_claim", duration, {'claim': claim[:50], 'status': result.get('status')})
             
             return result
             
-        except json.JSONDecodeError:
-            logger.warning(f"Failed to parse LLM response for claim: {claim}")
-            return {
-                "status": "unverified",
-                "confidence": 0.3,
-                "explanation": "Could not verify this claim.",
-                "source": None,
-                "evidence": []
-            }
         except Exception as e:
-            logger.error(f"Verification error: {e}")
-            return {
-                "status": "unverified",
-                "confidence": 0.1,
-                "explanation": f"Error during verification: {str(e)}",
-                "source": None,
-                "evidence": []
-            }
+            return {"status": "unverified", "confidence": 0.1, "explanation": f"Could not verify due to: {str(e)[:50]}"}
     
-    def check_post(self, post_content: str, max_claims: int = 5) -> Dict[str, Any]:
-        """Fact-check an entire post with scoring."""
-        start_time = time.time()
-        
-        # Extract claims
-        claims = self.extract_claims(post_content)
+    def check_post(self, content: str) -> Dict[str, Any]:
+        """Check all claims in a post with improved scoring."""
+        claims = self.extract_claims(content)
         
         if not claims:
             return {
-                "status": "no_claims",
-                "claims_checked": {},
-                "summary": "No factual claims found to verify.",
-                "overall_confidence": 1.0
+                "status": "no_claims", 
+                "claims_checked": {}, 
+                "summary": "No specific factual claims found to verify"
             }
         
-        # Limit claims
-        claims = claims[:max_claims]
-        
-        # Verify each claim
-        claims_checked = {}
-        verified_count = 0
-        inaccurate_count = 0
-        unverified_count = 0
-        total_confidence = 0.0
-        
-        for claim in claims:
-            result = self.verify_claim(claim)
-            claims_checked[claim] = result
-            
-            if result.get("status") == "verified":
-                verified_count += 1
-            elif result.get("status") == "inaccurate":
-                inaccurate_count += 1
-            else:
-                unverified_count += 1
-            
-            total_confidence += result.get("confidence", 0.0)
+        checked = {}
+        for claim in claims[:5]:  # Check up to 5 claims
+            checked[claim] = self.verify_claim(claim)
         
         # Calculate statistics
-        avg_confidence = total_confidence / len(claims) if claims else 0.0
+        statuses = [r.get('status', '') for r in checked.values()]
+        verified = statuses.count('verified')
+        partial = statuses.count('partially_verified')
+        unverified = statuses.count('unverified')
+        inaccurate = statuses.count('inaccurate')
         
         # Determine overall status
-        if inaccurate_count > 0:
-            status = "inaccurate"
-            summary = f"Found {inaccurate_count} inaccurate claim(s). Please review these claims before publishing."
-        elif verified_count == len(claims):
-            status = "verified"
-            summary = f"All {verified_count} claims verified successfully with {avg_confidence:.1%} average confidence."
-        elif verified_count > 0:
-            status = "partially_verified"
-            summary = f"Verified {verified_count} of {len(claims)} claims. {unverified_count} claim(s) could not be verified."
+        if inaccurate > 0:
+            overall_status = "inaccurate"
+        elif verified > 0 and partial == 0 and unverified == 0:
+            overall_status = "verified"
+        elif verified > 0 or partial > 0:
+            overall_status = "partially_verified"
         else:
-            status = "unverified"
-            summary = f"Could not verify any of the {len(claims)} claims found."
-        
-        duration = time.time() - start_time
-        log_performance("check_post", duration, {'claims': len(claims), 'status': status})
+            overall_status = "unverified"
         
         return {
-            "status": status,
-            "claims_checked": claims_checked,
-            "summary": summary,
-            "statistics": {
-                "total_claims": len(claims),
-                "verified": verified_count,
-                "unverified": unverified_count,
-                "inaccurate": inaccurate_count,
-                "average_confidence": avg_confidence
-            },
-            "overall_confidence": avg_confidence
+            "status": overall_status,
+            "claims_checked": checked,
+            "summary": f"Found {len(checked)} claims: {verified} verified, {partial} partial, {unverified} unverified, {inaccurate} inaccurate"
         }
